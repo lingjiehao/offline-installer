@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
 import json
 import os
+import subprocess
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.request
@@ -43,6 +46,42 @@ def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def run(cmd, cwd: Path | None = None, capture: bool = False) -> str:
+    """执行外部命令；失败时抛出带输出的异常。"""
+    log("    $ " + " ".join(str(part) for part in cmd))
+    result = subprocess.run(
+        [str(part) for part in cmd],
+        cwd=str(cwd) if cwd else None,
+        text=True,
+        capture_output=capture,
+    )
+    if result.returncode != 0:
+        detail = ((result.stderr or "") + (result.stdout or "")).strip()
+        raise RuntimeError(f"命令失败（退出码 {result.returncode}）：{' '.join(map(str, cmd))}\n{detail}")
+    return (result.stdout or "") if capture else ""
+
+
+def make_tar_gz(src_dir: Path, archive: Path) -> None:
+    """可复现打包：固定 mtime/uid/gid，gzip 头 mtime=0。"""
+    with archive.open("wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz:
+        with tarfile.open(fileobj=gz, mode="w") as tf:
+            for path in sorted(src_dir.rglob("*")):
+                arcname = path.relative_to(src_dir.parent)
+                info = tf.gettarinfo(str(path), arcname=str(arcname))
+                info.uid = info.gid = 0
+                info.uname = info.gname = ""
+                info.mtime = 0
+                if info.isfile():
+                    with path.open("rb") as fh:
+                        tf.addfile(info, fh)
+                else:
+                    tf.addfile(info)
 
 
 def write_json(path: Path, data) -> None:

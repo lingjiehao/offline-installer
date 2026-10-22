@@ -6,7 +6,10 @@
   python scripts/build.py build --pkg fd [--out dist] [--work-dir .work] [--keep]
 
 plan  解析上游最新版本，判断哪些包需要构建（已发布过的跳过）。
-build 下载单个包的资产到 dist/，并写 dist/meta/<id>.json 供 publish 使用。
+build 构建单个包：
+        github    下载上游资产到 dist/
+        wheelhouse 下载全部 wheel、离线安装自检、打包到 dist/
+      并写 dist/meta/<id>.json 供 publish 使用。
 """
 
 from __future__ import annotations
@@ -49,12 +52,18 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
     repo = args.repo or os.environ.get("GITHUB_REPOSITORY", "")
     state = fetch_state(gh, repo, cfg.release_tag) if repo else None
-    published = {}
+    published: dict[str, set[str]] = {}
     for pkg_id, entry in (state or {}).get("packages", {}).items():
         published[pkg_id] = {asset.get("name") for asset in entry.get("assets", [])}
 
     todo: list[dict] = []
     for pkg in packages:
+        if pkg.type == "wheelhouse":
+            # 依赖版本无法预先得知，总是重建；内容哈希相同则发布阶段跳过上传
+            todo.append({"pkg": pkg.id})
+            util.log(f"待构建 {pkg.id}（wheelhouse，总是重建）")
+            continue
+
         try:
             release = gh.latest_release(pkg.repo)
             version = model.version_from_tag(release["tag_name"], pkg.version_regex)
@@ -81,10 +90,17 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
 
 def cmd_build(args: argparse.Namespace) -> int:
-    config = model.load_config(ROOT)
     (pkg,) = model.load_packages(ROOT, [args.pkg])
-    gh = GitHub(args.token)
+    if pkg.type == "github":
+        return build_github(pkg, args)
+    if pkg.type == "wheelhouse":
+        return build_wheelhouse(pkg, args)
+    util.die(f"{pkg.id}: 不支持的类型 {pkg.type}")
+    return 1
 
+
+def build_github(pkg: model.Package, args: argparse.Namespace) -> int:
+    gh = GitHub(args.token)
     release = gh.latest_release(pkg.repo)
     tag = release["tag_name"]
     version = model.version_from_tag(tag, pkg.version_regex)
@@ -124,7 +140,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         "description": pkg.description,
         "note": pkg.note,
         "bins": list(pkg.bins),
-        "install": model.install_command(pkg, name, version),
+        "install": "",
         "built_at": util.utc_now_iso(),
     }
     util.write_json(out / "meta" / f"{pkg.id}.json", meta)
@@ -132,6 +148,111 @@ def cmd_build(args: argparse.Namespace) -> int:
     if not args.keep:
         shutil.rmtree(work, ignore_errors=True)
     util.log(f"完成：{target}")
+    return 0
+
+
+def build_wheelhouse(pkg: model.Package, args: argparse.Namespace) -> int:
+    out = Path(args.out)
+    work = Path(args.work_dir) / pkg.id
+    wheels_dir = work / "wheels"
+    shutil.rmtree(work, ignore_errors=True)
+    wheels_dir.mkdir(parents=True)
+
+    requested = work / "requested.txt"
+    requested.write_text("\n".join(pkg.requirements) + "\n", encoding="utf-8")
+
+    python = args.python or sys.executable
+    util.log(f"{pkg.id}（wheelhouse）")
+    util.run(
+        [
+            python,
+            "-m",
+            "pip",
+            "download",
+            "--only-binary=:all:",
+            "--no-cache-dir",
+            "--dest",
+            wheels_dir,
+            "-r",
+            requested,
+        ]
+    )
+
+    wheels = sorted(wheels_dir.glob("*.whl"))
+    if not wheels:
+        util.die("没有下载到任何 wheel")
+    impure = [w.name for w in wheels if not model.is_pure_wheel(w.name)]
+    if impure:
+        util.die(
+            "发现非纯 Python wheel，当前版本只支持纯 Python 包：\n  " + "\n  ".join(impure)
+        )
+    util.log(f"    共 {len(wheels)} 个 wheel，全部为纯 Python")
+
+    # 在临时 venv 里做一次完全离线的安装自检，并生成精确锁定
+    venv = work / "venv"
+    util.run([python, "-m", "venv", venv])
+    venv_python = venv / "bin" / "python"
+    util.run(
+        [
+            venv_python,
+            "-m",
+            "pip",
+            "install",
+            "--no-index",
+            "--find-links",
+            wheels_dir,
+            "--disable-pip-version-check",
+            "--quiet",
+            "-r",
+            requested,
+        ]
+    )
+    frozen = util.run([venv_python, "-m", "pip", "freeze"], capture=True).strip().splitlines()
+    version = model.version_from_freeze(frozen, pkg.id)
+    util.log(f"    离线安装自检通过，{pkg.id} {version}")
+
+    digest = util.sha256_text("\n".join(w.name for w in wheels))[:6]
+    asset = model.wheelhouse_asset_name(pkg.id, version, digest)
+    dirname = asset[: -len(".tar.gz")]
+    stage = work / "stage" / dirname
+    stage.mkdir(parents=True)
+
+    shutil.copytree(wheels_dir, stage / "wheels")
+    (stage / "requirements.txt").write_text("\n".join(frozen) + "\n", encoding="utf-8")
+    shutil.copy2(requested, stage / "requested.txt")
+
+    installer = pkg.dir / "install.sh"
+    if not installer.exists():
+        util.die(f"缺少 {installer}")
+    shutil.copy2(installer, stage / "install.sh")
+    (stage / "install.sh").chmod(0o755)
+
+    out.mkdir(parents=True, exist_ok=True)
+    archive = out / asset
+    if archive.exists():
+        util.die(f"{archive} 已存在，请先清理 dist/")
+    util.make_tar_gz(stage, archive)
+
+    size = archive.stat().st_size
+    meta = {
+        "id": pkg.id,
+        "version": version,
+        "tag": version,
+        "asset": asset,
+        "sha256": util.sha256_file(archive),
+        "size": size,
+        "upstream": f"https://pypi.org/project/{pkg.id}/{version}/",
+        "description": pkg.description,
+        "note": pkg.note,
+        "bins": list(pkg.bins),
+        "install": model.install_command(pkg, asset, version, dirname),
+        "built_at": util.utc_now_iso(),
+    }
+    util.write_json(out / "meta" / f"{pkg.id}.json", meta)
+
+    if not args.keep:
+        shutil.rmtree(work, ignore_errors=True)
+    util.log(f"完成：{archive}（{util.human_size(size)}）")
     return 0
 
 
@@ -152,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
     p_build.add_argument("--pkg", required=True)
     p_build.add_argument("--out", default="dist")
     p_build.add_argument("--work-dir", default=os.environ.get("OFFLINE_WORK_DIR", ".work"))
+    p_build.add_argument("--python", default="", help="wheelhouse 使用的 Python，默认当前解释器")
     p_build.add_argument("--keep", action="store_true", help="保留下载的临时文件")
     p_build.set_defaults(func=cmd_build)
 

@@ -6,5 +6,3 @@ note = "官方 Linux 构建要求 glibc >= 2.18；压缩包约 112 MB"
 
 asset = "clangd-linux-{version}.zip"
 bins = ["clangd"]
-
-install = "unzip {asset} && install -m755 clangd_{version}/bin/clangd ~/.local/bin/"

@@ -24,14 +24,15 @@ class Platform:
 @dataclass(frozen=True)
 class Package:
     id: str
-    type: str
-    repo: str
-    asset: str
+    type: str = "github"
+    repo: str = ""
+    asset: str = ""
     bins: tuple[str, ...] = ()
     description: str = ""
     note: str = ""
     install: str = ""
     version_regex: str = ""
+    requirements: tuple[str, ...] = ()
     dir: Path | None = None
 
 
@@ -65,8 +66,12 @@ def load_packages(root: Path, only: list[str] | None = None) -> list[Package]:
         if unknown:
             raise SystemExit(f"{path}: 未知字段 {', '.join(sorted(unknown))}")
         pkg = Package(dir=path.parent, **raw)
-        if pkg.type != "github":
-            raise SystemExit(f'{path}: 初版只支持 type = "github"')
+        if pkg.type not in ("github", "wheelhouse"):
+            raise SystemExit(f'{path}: 不支持 type = "{pkg.type}"（可选 github / wheelhouse）')
+        if pkg.type == "github" and not (pkg.repo and pkg.asset):
+            raise SystemExit(f'{path}: type = "github" 需要 repo 与 asset')
+        if pkg.type == "wheelhouse" and not pkg.requirements:
+            raise SystemExit(f'{path}: type = "wheelhouse" 需要 requirements')
         if only and pkg.id not in only:
             continue
         packages.append(pkg)
@@ -103,8 +108,36 @@ def pick_asset(assets: list[dict], name: str) -> dict:
     raise LookupError(f"上游没有名为 {name!r} 的资产，可用资产：\n  {available}")
 
 
-def install_command(pkg: Package, name: str, version: str) -> str:
-    return pkg.install.replace("{asset}", name).replace("{version}", version)
+def install_command(pkg: Package, name: str, version: str, dirname: str = "") -> str:
+    return (
+        pkg.install.replace("{asset}", name)
+        .replace("{version}", version)
+        .replace("{dir}", dirname)
+    )
+
+
+def is_pure_wheel(filename: str) -> bool:
+    """纯 Python wheel（py3-none-any / py2.py3-none-any）。"""
+    return filename.endswith("-none-any.whl")
+
+
+def version_from_freeze(lines: list[str], name: str) -> str:
+    """从 pip freeze 输出中取指定包的版本；包名按 PEP 503 规范化比较。"""
+    def norm(value: str) -> str:
+        return re.sub(r"[-_.]+", "-", value).lower()
+
+    target = norm(name)
+    for line in lines:
+        if "==" not in line:
+            continue
+        pkg_name, version = line.split("==", 1)
+        if norm(pkg_name) == target:
+            return version.strip()
+    raise ValueError(f"pip freeze 中找不到 {name}")
+
+
+def wheelhouse_asset_name(pkg_id: str, version: str, digest: str) -> str:
+    return f"{pkg_id}-{version}+{digest}-py3-none-any.tar.gz"
 
 
 def split_retained(entries: list[dict], keep: int) -> tuple[list[dict], list[dict]]:
@@ -148,9 +181,9 @@ def release_body(cfg: Config, state: dict, repo: str) -> str:
     lines = [
         f"## 离线包（{cfg.platform.label}）",
         "",
-        "二进制文件均来自上游项目，未经修改。下载后按“安装命令”一列执行即可，无需 root。",
+        "二进制文件均来自上游项目，未经修改。",
         "",
-        "| 包 | 版本 | 文件 | 大小 | 安装命令 |",
+        "| 包 | 版本 | 文件 | 大小 | sha256 |",
         "|---|---|---|---|---|",
     ]
     for pkg_id, entry in sorted(state.get("packages", {}).items()):
@@ -158,15 +191,11 @@ def release_body(cfg: Config, state: dict, repo: str) -> str:
         if not assets:
             continue
         latest = sorted(assets, key=lambda a: a.get("built_at") or "")[-1]
-        install = latest.get("install") or "—"
         size = human_size(latest.get("size", 0))
-        lines.append(f"| `{pkg_id}` | {entry.get('version', '')} | `{latest['name']}` | {size} | `{install}` |")
+        digest = (latest.get("sha256") or "")[:16]
+        lines.append(f"| `{pkg_id}` | {entry.get('version', '')} | `{latest['name']}` | {size} | `{digest}…` |")
     lines += [
         "",
-        "也可以下载 `index.json` 用脚本批量取用；`SHA256SUMS` 用于校验。",
-        "",
-        "```sh",
-        f"curl -fLO https://github.com/{repo}/releases/latest/download/index.json",
-        "```",
+        "`index.json` 包含每个包的完整信息；`SHA256SUMS` 用于校验。",
     ]
     return "\n".join(lines)

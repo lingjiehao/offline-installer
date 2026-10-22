@@ -56,11 +56,33 @@ class AssetTest(unittest.TestCase):
         with self.assertRaises(LookupError):
             model.pick_asset([{"name": "a"}], "b")
 
-    def test_install_command(self):
-        pkg = make_pkg()
+    def test_install_command_with_dir(self):
+        pkg = make_pkg(install="tar -xzf {asset} && ./{dir}/install.sh")
         self.assertEqual(
-            model.install_command(pkg, "demo-1.2.3-linux.tar.gz", "1.2.3"),
-            "tar -xzf demo-1.2.3-linux.tar.gz && install -m755 demo-1.2.3/demo ~/.local/bin/",
+            model.install_command(pkg, "demo-1.2.3.tar.gz", "1.2.3", "demo-1.2.3"),
+            "tar -xzf demo-1.2.3.tar.gz && ./demo-1.2.3/install.sh",
+        )
+
+
+class WheelhouseTest(unittest.TestCase):
+    def test_pure_wheel(self):
+        self.assertTrue(model.is_pure_wheel("compiledb-0.10.7-py3-none-any.whl"))
+        self.assertTrue(model.is_pure_wheel("bashlex-0.18-py2.py3-none-any.whl"))
+        self.assertFalse(
+            model.is_pure_wheel("numpy-2.1.3-cp312-cp312-manylinux2014_x86_64.whl")
+        )
+
+    def test_version_from_freeze(self):
+        frozen = ["click==8.1.7", "bashlex==0.18", "compiledb==0.10.7"]
+        self.assertEqual(model.version_from_freeze(frozen, "compiledb"), "0.10.7")
+        self.assertEqual(model.version_from_freeze(frozen, "Compiledb"), "0.10.7")
+        with self.assertRaises(ValueError):
+            model.version_from_freeze(frozen, "missing")
+
+    def test_asset_name(self):
+        self.assertEqual(
+            model.wheelhouse_asset_name("compiledb", "0.10.7", "ab12cd"),
+            "compiledb-0.10.7+ab12cd-py3-none-any.tar.gz",
         )
 
 
@@ -127,7 +149,7 @@ class LoadPackagesTest(unittest.TestCase):
     def test_repository_packages_load(self):
         packages = model.load_packages(ROOT)
         ids = {p.id for p in packages}
-        self.assertTrue({"ripgrep", "fd", "clangd"} <= ids)
+        self.assertTrue({"ripgrep", "fd", "clangd", "compiledb"} <= ids)
 
     def test_filter(self):
         packages = model.load_packages(ROOT, ["fd"])

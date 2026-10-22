@@ -58,7 +58,7 @@ def load_metas(dist: Path) -> list[dict]:
     return metas
 
 
-def merge_state(state: dict, metas: list[dict]) -> dict:
+def merge_state(state: dict, metas: list[dict], uploaded: set[str] | None = None) -> dict:
     packages = state.setdefault("packages", {})
     for meta in metas:
         entry = packages.setdefault(meta["id"], {})
@@ -72,17 +72,17 @@ def merge_state(state: dict, metas: list[dict]) -> dict:
                 "bins": meta["bins"],
             }
         )
-        assets = [a for a in entry.get("assets", []) if a.get("name") != meta["asset"]]
-        assets.append(
-            {
+        existing = {a["name"]: a for a in entry.get("assets", [])}
+        # 同名资产已经存在且本次未重新上传时，保留原有记录（sha256/size/时间）
+        if uploaded is None or meta["asset"] in uploaded or meta["asset"] not in existing:
+            existing[meta["asset"]] = {
                 "name": meta["asset"],
                 "sha256": meta["sha256"],
                 "size": meta["size"],
                 "built_at": meta["built_at"],
                 "install": meta["install"],
             }
-        )
-        entry["assets"] = assets
+        entry["assets"] = list(existing.values())
     return state
 
 
@@ -148,9 +148,10 @@ def cmd_publish(args: argparse.Namespace) -> int:
     gh = GitHub(token)
 
     release = ensure_release(gh, cfg, repo)
-    state = merge_state(remote_state(gh, release), metas)
+    state = remote_state(gh, release)
 
     existing = {a["name"]: a for a in release.get("assets", [])}
+    uploaded: set[str] = set()
     for meta in metas:
         if meta["asset"] in existing and not args.clobber:
             util.log(f"已存在，跳过：{meta['asset']}")
@@ -159,6 +160,9 @@ def cmd_publish(args: argparse.Namespace) -> int:
             gh.delete_asset(repo, existing[meta["asset"]]["id"])
         util.log(f"上传 {meta['asset']}")
         gh.upload_asset(repo, release["id"], meta["asset"], meta["path"], content_type(meta["asset"]))
+        uploaded.add(meta["asset"])
+
+    state = merge_state(state, metas, uploaded)
 
     # 清理超出保留数量的旧版本
     release = gh.release_by_tag(repo, cfg.release_tag) or release

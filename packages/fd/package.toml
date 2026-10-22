@@ -5,5 +5,3 @@ description = "find 的替代品：快速、用户友好的文件搜索"
 
 asset = "fd-v{version}-x86_64-unknown-linux-musl.tar.gz"
 bins = ["fd"]
-
-install = "tar -xzf {asset} && install -m755 fd-v{version}-x86_64-unknown-linux-musl/fd ~/.local/bin/"

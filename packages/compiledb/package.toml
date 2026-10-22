@@ -1,0 +1,10 @@
+id = "compiledb"
+type = "wheelhouse"
+description = "根据构建日志生成 compile_commands.json（配合 clangd 使用）"
+
+# PyPI 依赖，构建时自动下载全部传递依赖
+requirements = ["compiledb"]
+bins = ["compiledb"]
+
+# {asset} = 压缩包名，{dir} = 解压后的目录，{version} = 版本
+install = "tar -xzf {asset} && ./{dir}/install.sh"
