@@ -64,6 +64,7 @@ def merge_state(state: dict, metas: list[dict], uploaded: set[str] | None = None
         entry = packages.setdefault(meta["id"], {})
         entry.update(
             {
+                "type": meta.get("type", "github"),
                 "version": meta["version"],
                 "tag": meta["tag"],
                 "upstream": meta["upstream"],

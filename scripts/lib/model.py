@@ -166,7 +166,7 @@ def make_index(cfg: Config, state: dict, repo: str, now: str) -> dict:
                 "sha256": latest.get("sha256", ""),
                 "url": f"https://github.com/{repo}/releases/download/{cfg.release_tag}/{latest['name']}",
                 "upstream": entry.get("upstream", ""),
-                "install": latest.get("install", ""),
+                "install": latest.get("install", "") if entry.get("type") == "wheelhouse" else "",
             }
         )
     return {

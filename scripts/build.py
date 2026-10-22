@@ -131,6 +131,7 @@ def build_github(pkg: model.Package, args: argparse.Namespace) -> int:
 
     meta = {
         "id": pkg.id,
+        "type": pkg.type,
         "version": version,
         "tag": tag,
         "asset": name,
@@ -236,6 +237,7 @@ def build_wheelhouse(pkg: model.Package, args: argparse.Namespace) -> int:
     size = archive.stat().st_size
     meta = {
         "id": pkg.id,
+        "type": pkg.type,
         "version": version,
         "tag": version,
         "asset": asset,
