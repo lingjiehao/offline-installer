@@ -1,0 +1,103 @@
+name: build-bundles
+
+on:
+  schedule:
+    - cron: "0 4 * * 1" # 每周一 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: "要构建的包（空格分隔，留空 = 全部）"
+        required: false
+        default: ""
+      force:
+        description: "忽略已发布记录，强制重建"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - "config.toml"
+      - "packages/**"
+      - "scripts/**"
+      - "tests/**"
+      - ".github/workflows/build.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-bundles
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_work: ${{ steps.plan.outputs.has_work }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 单元测试
+        run: python -m unittest discover -s tests -v
+      - id: plan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PACKAGES: ${{ inputs.packages }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          args=(--repo "$REPO" --github-output "$GITHUB_OUTPUT")
+          if [ -n "$PACKAGES" ]; then args+=(--packages "$PACKAGES"); fi
+          if [ "$FORCE" = "true" ]; then args+=(--force); fi
+          python scripts/build.py plan "${args[@]}"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.has_work == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 构建 ${{ matrix.pkg }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/build.py build --pkg "${{ matrix.pkg }}" --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.pkg }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: [plan, build]
+    if: always() && needs.plan.outputs.has_work == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          path: dist
+          merge-multiple: true
+      - name: 发布
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ ! -d dist/meta ] || [ -z "$(ls -A dist/meta 2>/dev/null)" ]; then
+            echo "没有成功构建的产物，跳过发布"
+            exit 0
+          fi
+          python scripts/publish.py --dist dist --repo "$REPO"

@@ -1,0 +1,11 @@
+id = "ripgrep"
+type = "github"
+repo = "BurntSushi/ripgrep"
+description = "递归搜索工具（grep 的替代品）"
+
+# {version} = tag 去掉 v 前缀；{tag} = 原始 tag
+asset = "ripgrep-{version}-x86_64-unknown-linux-musl.tar.gz"
+bins = ["rg"]
+
+# 内网机器上可直接复制执行的安装命令；{asset} / {version} 会被替换
+install = "tar -xzf {asset} && install -m755 ripgrep-{version}-x86_64-unknown-linux-musl/rg ~/.local/bin/"

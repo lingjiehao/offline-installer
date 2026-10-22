@@ -1,0 +1,14 @@
+# 全局配置
+# 所有产物发布到同一个滚动 Release（tag = release_tag），用户始终可用
+# https://github.com/<owner>/<repo>/releases/latest/download/<asset> 取到最新文件。
+
+release_tag = "bundles"
+release_name = "Offline bundles (linux-x64)"
+
+# 每个包最多保留多少个历史版本（按构建时间倒序）
+retention = 3
+
+[platform]
+os = "linux"
+arch = "x64"
+libc = "gnu"
