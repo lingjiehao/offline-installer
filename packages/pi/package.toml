@@ -1,0 +1,12 @@
+id = "pi"
+type = "pi"
+repo = "earendil-works/pi"
+asset = "pi-linux-x64.tar.gz"
+description = "pi coding agent（含 ask-user、subagents 扩展）"
+note = "官方自包含二进制，需要 glibc >= 2.17；扩展的运行依赖已内置"
+
+# name 或 name@version；留空版本表示跟随 npm latest
+extensions = ["pi-ask-user", "pi-subagents"]
+bins = ["pi"]
+
+install = "tar -xzf {asset} && ./{dir}/install.sh"

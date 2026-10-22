@@ -33,6 +33,7 @@ class Package:
     install: str = ""
     version_regex: str = ""
     requirements: tuple[str, ...] = ()
+    extensions: tuple[str, ...] = ()
     dir: Path | None = None
 
 
@@ -66,12 +67,14 @@ def load_packages(root: Path, only: list[str] | None = None) -> list[Package]:
         if unknown:
             raise SystemExit(f"{path}: 未知字段 {', '.join(sorted(unknown))}")
         pkg = Package(dir=path.parent, **raw)
-        if pkg.type not in ("github", "wheelhouse"):
-            raise SystemExit(f'{path}: 不支持 type = "{pkg.type}"（可选 github / wheelhouse）')
+        if pkg.type not in ("github", "wheelhouse", "pi"):
+            raise SystemExit(f'{path}: 不支持 type = "{pkg.type}"（可选 github / wheelhouse / pi）')
         if pkg.type == "github" and not (pkg.repo and pkg.asset):
             raise SystemExit(f'{path}: type = "github" 需要 repo 与 asset')
         if pkg.type == "wheelhouse" and not pkg.requirements:
             raise SystemExit(f'{path}: type = "wheelhouse" 需要 requirements')
+        if pkg.type == "pi" and not (pkg.repo and pkg.asset and pkg.extensions):
+            raise SystemExit(f'{path}: type = "pi" 需要 repo、asset 与 extensions')
         if only and pkg.id not in only:
             continue
         packages.append(pkg)
@@ -166,7 +169,10 @@ def make_index(cfg: Config, state: dict, repo: str, now: str) -> dict:
                 "sha256": latest.get("sha256", ""),
                 "url": f"https://github.com/{repo}/releases/download/{cfg.release_tag}/{latest['name']}",
                 "upstream": entry.get("upstream", ""),
-                "install": latest.get("install", "") if entry.get("type") == "wheelhouse" else "",
+                "install": latest.get("install", "")
+                if entry.get("type") in ("wheelhouse", "pi")
+                else "",
+                "extensions": entry.get("extensions", []),
             }
         )
     return {

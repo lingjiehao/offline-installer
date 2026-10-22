@@ -66,10 +66,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: 构建 ${{ matrix.pkg }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python scripts/build.py build --pkg "${{ matrix.pkg }}" --out dist
+      - name: pi 冒烟测试
+        if: matrix.pkg == 'pi'
+        run: |
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/home"
+          tar -xzf dist/pi-*.tar.gz -C "$tmp"
+          HOME="$tmp/home" "$tmp"/pi-offline-*/install.sh
+          HOME="$tmp/home" "$tmp/home/.local/bin/pi" --version
+          HOME="$tmp/home" "$tmp/home/.local/bin/pi" list
       - uses: actions/upload-artifact@v4
         with:
           name: bundle-${{ matrix.pkg }}

@@ -14,6 +14,7 @@
 | `fd` | [sharkdp/fd](https://github.com/sharkdp/fd) | github | 提供 `fd`，静态 musl 构建 |
 | `clangd` | [clangd/clangd](https://github.com/clangd/clangd) | github | 提供 `clangd`，需要 glibc ≥ 2.18 |
 | `compiledb` | [PyPI](https://pypi.org/project/compiledb/) | wheelhouse | 生成 `compile_commands.json`；纯 Python，附 `install.sh` |
+| `pi` | [earendil-works/pi](https://github.com/earendil-works/pi) | pi | pi agent 本体 + `pi-ask-user`、`pi-subagents` 扩展，附 `install.sh` |
 
 所有产物发布在同一个滚动 Release：
 
@@ -25,7 +26,10 @@
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
-`wheelhouse` 类型的压缩包解压后内有 `install.sh`，默认装到当前 venv/conda 环境，否则 `pip install --user`；也可 `--venv DIR`。
+`wheelhouse` 与 `pi` 类型的压缩包解压后内有 `install.sh`：
+
+- `wheelhouse`：默认装到当前 venv/conda 环境，否则 `pip install --user`；也可 `--venv DIR`
+- `pi`：装到 `~/.local/opt/pi-agent`，启动器为 `~/.local/bin/pi`（已设置 `PI_OFFLINE=1`），扩展装到 `~/.pi/agent/packages/` 并写入 `settings.json`；`uninstall.sh` 可完整卸载
 
 ## 自动更新
 
@@ -67,17 +71,30 @@ bins = ["compiledb"]
 install = "tar -xzf {asset} && ./{dir}/install.sh"
 ```
 
-`wheelhouse` 包目录里需要提供 `install.sh`（构建时原样打进压缩包）。
+`pi` 类型（自包含二进制 + 扩展）：
+
+```toml
+id = "pi"
+type = "pi"
+repo = "earendil-works/pi"
+asset = "pi-linux-x64.tar.gz"
+extensions = ["pi-ask-user", "pi-subagents"]  # 可写 name@version 锁定
+bins = ["pi"]
+install = "tar -xzf {asset} && ./{dir}/install.sh"
+```
+
+`wheelhouse` 与 `pi` 包目录里需要提供 `install.sh`（构建时原样打进压缩包）。
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `id` | 否 | 默认取目录名 |
-| `type` | 否 | `github`（默认）或 `wheelhouse` |
-| `repo` / `asset` | github 必填 | `owner/name`；资产名，支持 `{version}`、`{tag}` |
+| `type` | 否 | `github`（默认）、`wheelhouse` 或 `pi` |
+| `repo` / `asset` | github / pi 必填 | `owner/name`；资产名，支持 `{version}`、`{tag}` |
+| `extensions` | pi 必填 | npm 扩展列表，`name` 或 `name@version` |
 | `requirements` | wheelhouse 必填 | PyPI 包名列表 |
 | `bins` | 否 | 提供的命令，写入 `index.json` |
 | `description` / `note` | 否 | 写入 Release 说明和 `index.json` |
-| `install` | 否 | 命令模板，支持 `{asset}`、`{version}`、`{dir}`；wheelhouse 用 |
+| `install` | 否 | 命令模板，支持 `{asset}`、`{version}`、`{dir}`；wheelhouse / pi 用 |
 | `version_regex` | 否 | tag 无法用"去掉 v 前缀"解析时的正则，第一个捕获组为版本 |
 
 ## 本地开发
@@ -109,3 +126,4 @@ python scripts/publish.py --dry-run --repo lingjiehao/offline-installer
 - `github` 类型要求上游资产名可预测；上游改名时 `plan` 会报错并列出可用资产。
 - `wheelhouse` 目前只支持纯 Python wheel；含 C 扩展的包需要容器内构建，尚未实现。
 - `clangd` 需要 glibc ≥ 2.18（CentOS 7 自带 2.17，无法运行）。
+- `pi` 是 glibc 二进制，需要 glibc ≥ 2.17，无法在 Alpine（musl）上运行。

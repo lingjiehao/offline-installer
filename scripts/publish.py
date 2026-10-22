@@ -71,6 +71,7 @@ def merge_state(state: dict, metas: list[dict], uploaded: set[str] | None = None
                 "description": meta["description"],
                 "note": meta["note"],
                 "bins": meta["bins"],
+                "extensions": meta.get("extensions", []),
             }
         )
         existing = {a["name"]: a for a in entry.get("assets", [])}

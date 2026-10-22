@@ -19,12 +19,13 @@ import json
 import os
 import shutil
 import sys
+import tarfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from lib import model, util  # noqa: E402
+from lib import model, npm, util  # noqa: E402
 from lib.gh import GitHub  # noqa: E402
 
 STATE_ASSET = "state.json"
@@ -58,10 +59,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
     todo: list[dict] = []
     for pkg in packages:
-        if pkg.type == "wheelhouse":
-            # 依赖版本无法预先得知，总是重建；内容哈希相同则发布阶段跳过上传
+        if pkg.type in ("wheelhouse", "pi"):
+            # 依赖/扩展版本无法预先得知，总是重建；内容哈希相同则发布阶段跳过上传
             todo.append({"pkg": pkg.id})
-            util.log(f"待构建 {pkg.id}（wheelhouse，总是重建）")
+            util.log(f"待构建 {pkg.id}（{pkg.type}，总是重建）")
             continue
 
         try:
@@ -95,6 +96,8 @@ def cmd_build(args: argparse.Namespace) -> int:
         return build_github(pkg, args)
     if pkg.type == "wheelhouse":
         return build_wheelhouse(pkg, args)
+    if pkg.type == "pi":
+        return build_pi(pkg, args)
     util.die(f"{pkg.id}: 不支持的类型 {pkg.type}")
     return 1
 
@@ -255,6 +258,110 @@ def build_wheelhouse(pkg: model.Package, args: argparse.Namespace) -> int:
     if not args.keep:
         shutil.rmtree(work, ignore_errors=True)
     util.log(f"完成：{archive}（{util.human_size(size)}）")
+    return 0
+
+
+def build_pi(pkg: model.Package, args: argparse.Namespace) -> int:
+    """pi 官方自包含二进制 + 指定扩展（含运行依赖）。"""
+    out = Path(args.out)
+    work = Path(args.work_dir) / pkg.id
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+
+    gh = GitHub(args.token)
+    release = gh.latest_release(pkg.repo)
+    tag = release["tag_name"]
+    version = model.version_from_tag(tag, pkg.version_regex)
+    name = model.asset_name(pkg, version, tag)
+    asset = model.pick_asset(release["assets"], name)
+    util.log(f"{pkg.id} {version}")
+
+    archive = work / name
+    sha256, size = util.download(asset["browser_download_url"], archive, args.token)
+    expected = (asset.get("digest") or "").removeprefix("sha256:")
+    if expected and expected != sha256:
+        util.die(f"sha256 校验失败：上游为 {expected}，实际为 {sha256}")
+    util.log(f"    下载完成（{util.human_size(size)}）")
+
+    dirname = f"pi-offline-{version}"
+    stage = work / "stage" / dirname
+    stage.mkdir(parents=True)
+    with tarfile.open(archive, "r:gz") as tf:
+        tf.extractall(stage, filter="data")
+    if not (stage / "pi" / "pi").exists():
+        util.die("pi 归档结构异常：找不到 pi/pi")
+
+    extensions: list[dict] = []
+    for spec in pkg.extensions:
+        ext_name, wanted = npm.parse_spec(spec)
+        meta = npm.metadata(ext_name)
+        try:
+            ext_version = npm.resolve_version(meta, wanted)
+        except LookupError as exc:
+            util.die(f"{ext_name}: {exc}")
+        info = meta["versions"][ext_version]
+        dist = info["dist"]
+        flat = ext_name.replace("/", "__")
+        tgz = work / "ext" / f"{flat}-{ext_version}.tgz"
+        util.download(dist["tarball"], tgz)
+        try:
+            npm.verify_sri(tgz, dist["integrity"])
+        except ValueError as exc:
+            util.die(str(exc))
+
+        dest_pkg = stage / "packages" / flat
+        npm.extract_package(tgz, dest_pkg)
+        dependencies = info.get("dependencies") or {}
+        if dependencies:
+            util.log(f"    {ext_name}@{ext_version}：安装 {len(dependencies)} 个运行依赖")
+            npm.install_dependencies(dest_pkg)
+            missing = npm.missing_dependencies(dest_pkg, dependencies)
+            if missing:
+                util.die(f"{ext_name} 依赖不完整：{', '.join(missing)}")
+        else:
+            util.log(f"    {ext_name}@{ext_version}：无运行依赖")
+        extensions.append({"name": ext_name, "version": ext_version})
+
+    for script in ("install.sh", "uninstall.sh"):
+        src = pkg.dir / script
+        if not src.exists():
+            util.die(f"缺少 {src}")
+        shutil.copy2(src, stage / script)
+        (stage / script).chmod(0o755)
+
+    fingerprint = [f"pi@{version}"] + [f"{e['name']}@{e['version']}" for e in extensions]
+    fingerprint += npm.tree_versions(stage / "packages")
+    digest = util.sha256_text("\n".join(sorted(fingerprint)))[:6]
+    asset_name = f"{pkg.id}-{version}-linux-x64-{digest}.tar.gz"
+
+    out.mkdir(parents=True, exist_ok=True)
+    target = out / asset_name
+    if target.exists():
+        util.die(f"{target} 已存在，请先清理 dist/")
+    util.make_tar_gz(stage, target)
+
+    final_size = target.stat().st_size
+    meta = {
+        "id": pkg.id,
+        "type": pkg.type,
+        "version": version,
+        "tag": tag,
+        "asset": asset_name,
+        "sha256": util.sha256_file(target),
+        "size": final_size,
+        "upstream": f"https://github.com/{pkg.repo}/releases/tag/{tag}",
+        "description": pkg.description,
+        "note": pkg.note,
+        "bins": list(pkg.bins),
+        "install": model.install_command(pkg, asset_name, version, dirname),
+        "extensions": extensions,
+        "built_at": util.utc_now_iso(),
+    }
+    util.write_json(out / "meta" / f"{pkg.id}.json", meta)
+
+    if not args.keep:
+        shutil.rmtree(work, ignore_errors=True)
+    util.log(f"完成：{target}（{util.human_size(final_size)}）")
     return 0
 
 
