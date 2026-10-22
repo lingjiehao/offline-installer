@@ -31,14 +31,18 @@ sha256sum -c SHA256SUMS --ignore-missing
 - `wheelhouse`：默认装到当前 venv/conda 环境，否则 `pip install --user`；也可 `--venv DIR`
 - `pi`：装到 `~/.local/opt/pi-agent`，启动器为 `~/.local/bin/pi`（已设置 `PI_OFFLINE=1`），扩展装到 `~/.pi/agent/packages/` 并写入 `settings.json`；`uninstall.sh` 可完整卸载
 
-## 自动更新
+## 更新方式（手动触发）
 
-`.github/workflows/build.yml`：
+发布只在手动触发时发生：**Actions → build-bundles → Run workflow**。
 
-- 每周一 04:00 UTC 检查上游版本
-- `github` 类型：版本已发布过则跳过下载（依据 Release 里的 `state.json`）
-- `wheelhouse` 类型：每次重建，依赖内容变化才产生新资产（内容哈希参与文件名）
-- 支持手动触发：`workflow_dispatch`，可指定包、可 `force`
+- `packages` 留空 = 检查全部包；也可以只填 `pi compiledb`
+- `force` = 忽略已发布记录，强制重建
+- push 到 `main` 只跑单元测试和配置校验，不会发布
+
+触发后的行为：
+
+- `github` 类型：解析上游最新版本，`state.json` 里已有同名资产则跳过
+- `wheelhouse` / `pi`：每次重建；内容指纹不变则发布阶段跳过上传，变了才产生新资产
 - 每个包保留最近 3 个版本（`config.toml` 的 `retention`），旧资产自动删除
 - 发布后刷新 `index.json`、`SHA256SUMS`、`state.json` 和 Release 说明
 
